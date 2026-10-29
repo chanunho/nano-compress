@@ -46,12 +46,13 @@ def parse_sar(value):
 
 
 def target_width(media, height):
-    width, source_height = media.width, media.height
-    if media.rotation % 180 == 90:
-        width, source_height = source_height, width
-    if width <= 0 or source_height <= 0:
+    if media.width <= 0 or media.height <= 0:
         return max(2, 2 * round(height / 2))
-    value = height * (width * parse_sar(media.sample_aspect_ratio)) / source_height
+    sar = parse_sar(media.sample_aspect_ratio)
+    if media.rotation % 180 == 90:
+        value = height * media.height / (media.width * sar)
+    else:
+        value = height * media.width * sar / media.height
     return max(2, 2 * round(value / 2))
 
 
@@ -146,8 +147,15 @@ def build_command(job):
             "-color_trc",
             media.color_transfer or "smpte2084",
             "-colorspace",
-            "bt2020nc",
+            media.color_space or "bt2020nc",
         ]
+        x265_params = []
+        if media.master_display:
+            x265_params.append(f"master-display={media.master_display}")
+        if media.max_cll:
+            x265_params.append(f"max-cll={media.max_cll}")
+        if options.encoder == "hevc" and x265_params:
+            args += ["-x265-params", ":".join(x265_params)]
 
     if options.encoder == "hevc":
         args += ["-tag:v", "hvc1"]

@@ -42,6 +42,10 @@ class WidthTests(unittest.TestCase):
     def test_target_width_accounts_for_rotation(self):
         self.assertEqual(target_width(media(width=160, height=120, rotation=90, sample_aspect_ratio="1:1"), 144), 108)
 
+    def test_target_width_rotated_anamorphic(self):
+        m = media(width=320, height=240, rotation=90, sample_aspect_ratio="2:1")
+        self.assertEqual(target_width(m, 240), 90)
+
 
 class FilterTests(unittest.TestCase):
     def test_default_filters_scale_and_square_pixels(self):
@@ -136,6 +140,21 @@ class CommandTests(unittest.TestCase):
         m = media(is_hdr=True)
         result = build_command(job(media_info=m, options=Options(encoder="h264")))
         self.assertTrue(any("tone-map" in w for w in result.warnings))
+
+    def test_hdr_mastering_metadata_passed_to_x265(self):
+        m = media(
+            is_hdr=True,
+            color_transfer="smpte2084",
+            color_primaries="bt2020",
+            color_space="bt2020nc",
+            master_display="G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)",
+            max_cll="1000,400",
+        )
+        cmd = build_command(job(media_info=m)).args
+        self.assertIn("-x265-params", cmd)
+        params = cmd[cmd.index("-x265-params") + 1]
+        self.assertIn("master-display=", params)
+        self.assertIn("max-cll=1000,400", params)
 
 
 if __name__ == "__main__":

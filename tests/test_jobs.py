@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -81,12 +82,52 @@ class PlanFolderModeTests(unittest.TestCase):
         jobs = plan_jobs(self.root, out, recursive=True, overwrite=False)
         self.assertFalse(any("old.mp4" in j.input_path for j in jobs))
 
-    def test_collision_gets_numeric_suffix(self):
+    def test_same_stem_uses_stable_extension_suffix(self):
         open(os.path.join(self.root, "b.mp4"), "wb").close()
         jobs = plan_jobs(self.root, None, recursive=False, overwrite=False)
-        names = sorted(os.path.basename(j.output_path) for j in jobs)
-        self.assertIn("b_nc.mp4", names)
-        self.assertIn("b_nc_1.mp4", names)
+        mapping = {
+            os.path.basename(j.input_path): os.path.basename(j.output_path)
+            for j in jobs
+        }
+        self.assertEqual(mapping["b.mkv"], "b_mkv_nc.mp4")
+        self.assertEqual(mapping["b.mp4"], "b_mp4_nc.mp4")
+
+    def test_new_same_stem_input_is_not_silently_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            open(os.path.join(directory, "a.mkv"), "wb").close()
+            first = plan_jobs(directory, None, recursive=False, overwrite=False)[0]
+            self.assertEqual(os.path.basename(first.output_path), "a_nc.mp4")
+            os.makedirs(os.path.dirname(first.output_path))
+            open(first.output_path, "wb").close()
+
+            open(os.path.join(directory, "a.avi"), "wb").close()
+            jobs = plan_jobs(directory, None, recursive=False, overwrite=False)
+            mapping = {
+                os.path.basename(j.input_path): j
+                for j in jobs
+                if os.path.basename(j.input_path) in ("a.avi", "a.mkv")
+            }
+            self.assertEqual(os.path.basename(mapping["a.avi"].output_path), "a_avi_nc.mp4")
+            self.assertEqual(os.path.basename(mapping["a.mkv"].output_path), "a_mkv_nc.mp4")
+            self.assertFalse(mapping["a.avi"].skip)
+            self.assertFalse(mapping["a.mkv"].skip)
+
+    def test_symlinked_file_does_not_escape_output_dir(self):
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, True)
+        external = os.path.join(outside, "outside.mp4")
+        open(external, "wb").close()
+        link = os.path.join(self.root, "link.mp4")
+        os.symlink(external, link)
+
+        jobs = plan_jobs(self.root, None, recursive=False, overwrite=False)
+        planned = next(j for j in jobs if os.path.basename(j.input_path) == "link.mp4")
+        output_root = os.path.realpath(os.path.join(self.root, "compressed"))
+        output_real = os.path.realpath(planned.output_path)
+        self.assertTrue(
+            output_real.startswith(output_root + os.sep),
+            f"{output_real} escapes {output_root}",
+        )
 
 
 class TempOutputTests(unittest.TestCase):
@@ -109,6 +150,20 @@ class TempOutputTests(unittest.TestCase):
                     raise RuntimeError("boom")
             self.assertFalse(os.path.exists(final))
             self.assertFalse(os.path.exists(tmp))
+
+    def test_temp_never_collides_with_input_or_existing_part_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            final = os.path.join(d, "foo.mp4")
+            possible_input = os.path.join(d, "foo.part.mp4")
+            with open(possible_input, "wb") as handle:
+                handle.write(b"original")
+            with TempOutput(final) as tmp:
+                self.assertNotEqual(os.path.abspath(tmp), os.path.abspath(possible_input))
+                self.assertNotEqual(os.path.abspath(tmp), os.path.abspath(final))
+                open(tmp, "wb").close()
+            self.assertTrue(os.path.exists(possible_input))
+            with open(possible_input, "rb") as handle:
+                self.assertEqual(handle.read(), b"original")
 
 
 if __name__ == "__main__":

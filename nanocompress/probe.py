@@ -1,6 +1,6 @@
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 TEXT_SUBTITLE_CODECS = frozenset(
     {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
@@ -30,6 +30,9 @@ class MediaInfo:
     is_interlaced: bool
     audio_tracks: int
     subtitles: tuple
+    color_space: str = ""
+    master_display: str = ""
+    max_cll: str = ""
 
 
 def is_hdr_color(transfer, primaries):
@@ -47,7 +50,10 @@ def is_interlaced_field_order(field_order):
 def parse_rotation(stream):
     for entry in stream.get("side_data_list", []) or []:
         if "rotation" in entry:
-            return int(round(float(entry["rotation"]))) % 360
+            try:
+                return int(round(float(entry["rotation"]))) % 360
+            except (TypeError, ValueError):
+                break
     tags = stream.get("tags", {}) or {}
     if "rotate" in tags:
         try:
@@ -55,6 +61,49 @@ def parse_rotation(stream):
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+def _fraction(value):
+    numerator, denominator = str(value).split("/", 1)
+    numerator_f = float(numerator)
+    denominator_f = float(denominator)
+    if denominator_f == 0:
+        raise ValueError("zero denominator")
+    return numerator_f / denominator_f
+
+
+def parse_master_display(side_data):
+    required = (
+        "green_x", "green_y", "blue_x", "blue_y", "red_x", "red_y",
+        "white_point_x", "white_point_y", "min_luminance", "max_luminance",
+    )
+    if not all(key in side_data for key in required):
+        return ""
+    try:
+        def chroma(key):
+            return round(_fraction(side_data[key]) * 50000)
+
+        def luminance(key):
+            return round(_fraction(side_data[key]) * 10000)
+
+        return (
+            f"G({chroma('green_x')},{chroma('green_y')})"
+            f"B({chroma('blue_x')},{chroma('blue_y')})"
+            f"R({chroma('red_x')},{chroma('red_y')})"
+            f"WP({chroma('white_point_x')},{chroma('white_point_y')})"
+            f"L({luminance('max_luminance')},{luminance('min_luminance')})"
+        )
+    except (TypeError, ValueError, ZeroDivisionError):
+        return ""
+
+
+def parse_max_cll(side_data):
+    if "max_content" not in side_data or "max_average" not in side_data:
+        return ""
+    try:
+        return f"{int(side_data['max_content'])},{int(side_data['max_average'])}"
+    except (TypeError, ValueError):
+        return ""
 
 
 def _parse_duration(data):
@@ -102,24 +151,80 @@ def parse_media_info(data):
         is_interlaced=is_interlaced_field_order(video.get("field_order", "")),
         audio_tracks=sum(1 for s in streams if s.get("codec_type") == "audio"),
         subtitles=subtitles,
+        color_space=video.get("color_space", "") or "",
     )
+
+
+def _read_hdr_side_data(path):
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_frames",
+                "-read_intervals",
+                "%+#1",
+                "-show_entries",
+                "frame=side_data_list",
+                "-of",
+                "json",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return "", ""
+
+    frames = data.get("frames", []) or []
+    if not frames:
+        return "", ""
+    master_display = ""
+    max_cll = ""
+    for entry in frames[0].get("side_data_list", []) or []:
+        kind = entry.get("side_data_type", "")
+        if kind == "Mastering display metadata" and not master_display:
+            master_display = parse_master_display(entry)
+        elif kind == "Content light level metadata" and not max_cll:
+            max_cll = parse_max_cll(entry)
+    return master_display, max_cll
 
 
 def probe(path):
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            path,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=True,
-    )
-    return parse_media_info(json.loads(result.stdout))
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or "ffprobe could not read the file"
+        raise RuntimeError(f"could not probe {path}: {detail}") from exc
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"could not parse ffprobe output for {path}: {exc}") from exc
+
+    info = parse_media_info(data)
+    if info.is_hdr:
+        master_display, max_cll = _read_hdr_side_data(path)
+        info = replace(info, master_display=master_display, max_cll=max_cll)
+    return info

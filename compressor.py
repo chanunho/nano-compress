@@ -132,13 +132,21 @@ def main(argv=None):
 
     try:
         validate_options(options)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    try:
         jobs = plan_jobs(
             args.input,
             args.output,
             recursive=args.recursive,
             overwrite=args.overwrite,
         )
-    except (ValueError, FileNotFoundError, NotADirectoryError) as exc:
+    except FileNotFoundError:
+        parser.error(f"input not found: {args.input}")
+    except NotADirectoryError:
+        parser.error(f"input is not a directory: {args.input}")
+    except ValueError as exc:
         parser.error(str(exc))
 
     if not jobs:

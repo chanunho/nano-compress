@@ -1,4 +1,5 @@
 import os
+import tempfile
 from dataclasses import dataclass
 
 VIDEO_EXTENSIONS = frozenset(
@@ -77,14 +78,40 @@ def _iter_sources(root, recursive, output_dir):
 def _plan_folder(input_path, output_path, recursive, overwrite):
     if not os.path.isdir(input_path):
         raise NotADirectoryError(input_path)
-    output_dir = output_path or os.path.join(input_path, "compressed")
-    root = os.path.realpath(input_path)
+    absolute_input = os.path.abspath(input_path)
+    absolute_output = os.path.abspath(output_path or os.path.join(input_path, "compressed"))
+    sources = list(_iter_sources(input_path, recursive, absolute_output))
+
+    stem_counts = {}
+    for source in sources:
+        source_abs = os.path.abspath(source)
+        key = (os.path.dirname(source_abs), os.path.splitext(os.path.basename(source_abs))[0])
+        stem_counts[key] = stem_counts.get(key, 0) + 1
+
     jobs = []
     used = set()
-    for source in _iter_sources(input_path, recursive, output_dir):
-        relative = os.path.relpath(os.path.realpath(source), root)
-        relative_output = os.path.splitext(relative)[0] + "_nc.mp4"
-        output = os.path.join(output_dir, relative_output)
+    for source in sources:
+        source_abs = os.path.abspath(source)
+        name = os.path.basename(source_abs)
+        stem, extension = os.path.splitext(name)
+        key = (os.path.dirname(source_abs), stem)
+        extension = extension.lstrip(".").lower()
+        base = f"{stem}_{extension}" if stem_counts[key] > 1 else stem
+
+        relative = os.path.relpath(source_abs, absolute_input)
+        relative_dir = os.path.dirname(relative)
+        relative_output = (
+            os.path.join(relative_dir, f"{base}_nc.mp4")
+            if relative_dir
+            else f"{base}_nc.mp4"
+        )
+        output = os.path.normpath(os.path.join(absolute_output, relative_output))
+        try:
+            common = os.path.commonpath([os.path.abspath(output), absolute_output])
+        except ValueError:
+            common = None
+        if common != absolute_output:
+            raise ValueError(f"refusing to write outside the output folder: {output}")
         output = _unique_path(output, used)
         used.add(output)
         skip = os.path.exists(output) and not overwrite
@@ -101,12 +128,22 @@ def plan_jobs(input_path, output_path, *, recursive, overwrite):
 class TempOutput:
     def __init__(self, final_path):
         self.final_path = final_path
-        self.temp_path = final_path[:-4] + ".part.mp4"
+        self.temp_path = None
 
     def __enter__(self):
-        return self.temp_path
+        directory = os.path.dirname(os.path.abspath(self.final_path))
+        os.makedirs(directory, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(self.final_path))[0]
+        handle, path = tempfile.mkstemp(
+            prefix=f"{stem}.", suffix=".part.mp4", dir=directory
+        )
+        os.close(handle)
+        self.temp_path = path
+        return path
 
     def __exit__(self, exc_type, exc, traceback):
+        if self.temp_path is None:
+            return False
         if exc_type is None:
             os.replace(self.temp_path, self.final_path)
         elif os.path.exists(self.temp_path):

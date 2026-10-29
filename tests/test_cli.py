@@ -37,6 +37,11 @@ class CliBasicTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("crf", result.stderr.lower())
 
+    def test_missing_input_has_clear_message(self):
+        result = run_cli("definitely-missing.mp4")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("not found", result.stderr.lower())
+
 
 @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not available")
 class CliIntegrationTests(unittest.TestCase):
