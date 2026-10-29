@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.worktrees/
+.superpowers/
+
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.part.mp4
