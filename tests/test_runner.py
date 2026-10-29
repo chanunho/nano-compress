@@ -94,7 +94,8 @@ class RunJobIntegrationTests(unittest.TestCase):
 
     def test_corrupt_input_reports_error(self):
         bad = os.path.join(self.dir, "bad.mp4")
-        open(bad, "wb").write(b"not a video")
+        with open(bad, "wb") as handle:
+            handle.write(b"not a video")
         result = run_job(PlannedJob(bad, os.path.join(self.dir, "bad_nc.mp4")), Options())
         self.assertFalse(result.ok)
         self.assertTrue(result.error)
