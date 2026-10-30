@@ -4,6 +4,9 @@ from nanocompress.settings import Options
 from nanocompress.probe import MediaInfo, Subtitle
 from nanocompress.command import (
     EncodeJob,
+    EncodePlan,
+    ProductEncodeJob,
+    build_product_commands,
     should_tonemap,
     parse_sar,
     target_width,
@@ -17,7 +20,8 @@ def media(**kw):
     base = dict(duration=60.0, width=842, height=456, video_codec="hevc",
                 sample_aspect_ratio="2105:2109", rotation=0,
                 color_transfer="bt709", color_primaries="bt709",
-                is_hdr=False, is_interlaced=False, audio_tracks=1, subtitles=())
+                is_hdr=False, is_dolby_vision=False,
+                is_interlaced=False, audio_tracks=1, subtitles=())
     base.update(kw)
     return MediaInfo(**base)
 
@@ -155,6 +159,87 @@ class CommandTests(unittest.TestCase):
         params = cmd[cmd.index("-x265-params") + 1]
         self.assertIn("master-display=", params)
         self.assertIn("max-cll=1000,400", params)
+
+
+def product_job(media_info=None, **plan_kw):
+    plan = dict(encoder="libx264", encoder_preset="veryfast", resolution=720,
+                crf=26, video_kbps=None, audio_bitrate="64k",
+                keep_hdr=False, keep_metadata=False, compatibility=False,
+                target_bytes=None)
+    plan.update(plan_kw)
+    return ProductEncodeJob("in.mp4", "/tmp/out.mp4", "/tmp/passlog",
+                            media_info or media(), EncodePlan(**plan))
+
+
+class ProductCommandTests(unittest.TestCase):
+    def test_sdr_default_strips_metadata_and_scales(self):
+        m = media(width=1920, height=1080, sample_aspect_ratio="1:1")
+        cmd = build_product_commands(product_job(m))[0].args
+        filters = cmd[cmd.index("-vf") + 1]
+        self.assertIn("scale=1280:720:flags=lanczos", filters)
+        self.assertNotIn("zscale", filters)
+        self.assertIn("-map_metadata", cmd)
+        self.assertEqual(cmd[cmd.index("-map_metadata") + 1], "-1")
+        self.assertIn("+faststart", cmd)
+
+    def test_keep_metadata_maps_source_metadata(self):
+        cmd = build_product_commands(product_job(keep_metadata=True))[0].args
+        self.assertEqual(cmd[cmd.index("-map_metadata") + 1], "0")
+
+    def test_hdr_default_tonemaps_to_sdr(self):
+        m = media(is_hdr=True, color_transfer="smpte2084", color_primaries="bt2020")
+        cmd = build_product_commands(product_job(m))[0].args
+        self.assertIn("zscale", " ".join(cmd))
+        self.assertIn("yuv420p", cmd)
+        self.assertNotIn("-color_primaries", cmd)
+
+    def test_keep_hdr_preserves_10bit_and_metadata(self):
+        m = media(is_hdr=True, color_transfer="smpte2084", color_primaries="bt2020")
+        cmd = build_product_commands(product_job(m, keep_hdr=True, encoder="libx265"))[0].args
+        self.assertNotIn("zscale", " ".join(cmd))
+        self.assertIn("yuv420p10le", cmd)
+        self.assertIn("-color_primaries", cmd)
+        self.assertIn("hvc1", cmd)
+
+    def test_dolby_vision_always_tonemaps_and_warns(self):
+        m = media(is_hdr=True, is_dolby_vision=True)
+        result = build_product_commands(product_job(m, keep_hdr=True, encoder="libx265"))[0]
+        self.assertIn("zscale", " ".join(result.args))
+        self.assertTrue(any("Dolby Vision" in w for w in result.warnings))
+
+    def test_compatibility_forces_cfr_30(self):
+        cmd = build_product_commands(product_job(compatibility=True))[0].args
+        self.assertIn("fps=30", cmd[cmd.index("-vf") + 1])
+
+    def test_default_preserves_vfr_timestamps(self):
+        cmd = build_product_commands(product_job())[0].args
+        self.assertNotIn("fps=", " ".join(cmd))
+
+    def test_hardware_bitrate_mode(self):
+        cmd = build_product_commands(product_job(encoder="h264_nvenc", crf=None,
+                                                 video_kbps=1000))[0].args
+        self.assertIn("h264_nvenc", cmd)
+        self.assertIn("-b:v", cmd)
+        self.assertNotIn("-crf", cmd)
+        self.assertNotIn("-preset", cmd)
+
+    def test_target_size_uses_two_passes(self):
+        commands = build_product_commands(product_job(crf=None, video_kbps=1237,
+                                                      target_bytes=10 * 1024 * 1024))
+        self.assertEqual(len(commands), 2)
+        self.assertIn("-pass", commands[0].args)
+        self.assertEqual(commands[0].args[commands[0].args.index("-pass") + 1], "1")
+        self.assertIn("-f", commands[0].args)
+        self.assertIn("null", commands[0].args)
+        self.assertEqual(commands[1].args[commands[1].args.index("-pass") + 1], "2")
+
+    def test_maps_all_audio_and_text_subtitles(self):
+        m = media(subtitles=(Subtitle(2, "subrip"), Subtitle(5, "hdmv_pgs_subtitle")))
+        result = build_product_commands(product_job(m))[0]
+        self.assertIn("0:a?", result.args)
+        self.assertIn("0:2", result.args)
+        self.assertNotIn("0:5", result.args)
+        self.assertTrue(any("image-based" in w for w in result.warnings))
 
 
 if __name__ == "__main__":
