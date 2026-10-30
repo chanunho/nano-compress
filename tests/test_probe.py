@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from nanocompress.probe import (
+    is_dolby_vision_stream,
     is_hdr_color,
     is_interlaced_field_order,
     parse_rotation,
@@ -117,6 +118,32 @@ class ParseMediaInfoTests(unittest.TestCase):
         data = make_probe_json()
         data["streams"][0]["color_space"] = "bt2020nc"
         self.assertEqual(parse_media_info(data).color_space, "bt2020nc")
+
+
+class DolbyVisionTests(unittest.TestCase):
+    def test_dvhe_tag_is_dolby_vision(self):
+        self.assertTrue(is_dolby_vision_stream({"codec_tag_string": "dvhe"}))
+
+    def test_dovi_side_data_is_dolby_vision(self):
+        stream = {"side_data_list": [{"side_data_type": "DOVI configuration record"}]}
+        self.assertTrue(is_dolby_vision_stream(stream))
+
+    def test_plain_hevc_is_not_dolby_vision(self):
+        self.assertFalse(is_dolby_vision_stream({"codec_tag_string": "hvc1"}))
+
+    def test_avg_frame_rate_is_parsed(self):
+        data = {"format": {"duration": "1.0"}, "streams": [{
+            "codec_type": "video", "width": 10, "height": 10,
+            "codec_name": "hevc", "avg_frame_rate": "30000/1001",
+        }]}
+        self.assertEqual(parse_media_info(data).avg_frame_rate, "30000/1001")
+
+    def test_dolby_vision_flag_is_parsed(self):
+        data = {"format": {"duration": "1.0"}, "streams": [{
+            "codec_type": "video", "width": 10, "height": 10,
+            "codec_name": "hevc", "codec_tag_string": "dvhe",
+        }]}
+        self.assertTrue(parse_media_info(data).is_dolby_vision)
 
 
 @unittest.skipUnless(shutil.which("ffprobe"), "ffprobe not available")

@@ -8,6 +8,8 @@ TEXT_SUBTITLE_CODECS = frozenset(
 
 _HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
 _SDR_TRANSFERS = frozenset({"bt709", "smpte170m", "bt470bg", ""})
+_DOLBY_VISION_TAGS = frozenset({"dvh1", "dvhe", "dvav", "dva1"})
+_DOLBY_VISION_SIDE_DATA = "DOVI configuration record"
 
 
 @dataclass(frozen=True)
@@ -33,12 +35,23 @@ class MediaInfo:
     color_space: str = ""
     master_display: str = ""
     max_cll: str = ""
+    avg_frame_rate: str = ""
+    is_dolby_vision: bool = False
 
 
 def is_hdr_color(transfer, primaries):
     if transfer in _HDR_TRANSFERS:
         return True
     return primaries == "bt2020" and transfer not in _SDR_TRANSFERS
+
+
+def is_dolby_vision_stream(stream):
+    if (stream.get("codec_tag_string", "") or "") in _DOLBY_VISION_TAGS:
+        return True
+    for entry in stream.get("side_data_list", []) or []:
+        if entry.get("side_data_type", "") == _DOLBY_VISION_SIDE_DATA:
+            return True
+    return False
 
 
 def is_interlaced_field_order(field_order):
@@ -152,6 +165,8 @@ def parse_media_info(data):
         audio_tracks=sum(1 for s in streams if s.get("codec_type") == "audio"),
         subtitles=subtitles,
         color_space=video.get("color_space", "") or "",
+        avg_frame_rate=video.get("avg_frame_rate") or video.get("r_frame_rate") or "",
+        is_dolby_vision=is_dolby_vision_stream(video),
     )
 
 
