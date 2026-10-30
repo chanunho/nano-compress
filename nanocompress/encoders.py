@@ -47,6 +47,8 @@ def parse_encoders(text):
         if match is None:
             continue
         name = match.group(1)
+        if name == "=":
+            continue
         codec, hardware = _classify(name)
         encoders.append(Encoder(name=name, codec=codec, hardware=hardware))
     return tuple(encoders)

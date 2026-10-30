@@ -47,6 +47,25 @@ class ParseTests(unittest.TestCase):
         text = "Encoders:\n ======\n V....D libx264  libx264 H.264\n"
         self.assertEqual([e.name for e in parse_encoders(text)], ["libx264"])
 
+    def test_skips_legend_lines_from_real_ffmpeg_output(self):
+        text = """Encoders:
+ V..... = Video
+ A..... = Audio
+ S..... = Subtitle
+ .F.... = Frame-level multithreading
+ ..S... = Slice-level multithreading
+ ...X.. = Codec is experimental
+ ....B. = Supports draw_horiz_band
+ .....D = Supports direct rendering method 1
+ ------
+ V....D libx264              libx264 H.264 (codec h264)
+ V....D h264_nvenc           NVIDIA NVENC H.264 encoder
+"""
+        self.assertEqual(
+            [e.name for e in parse_encoders(text)],
+            ["libx264", "h264_nvenc"],
+        )
+
 
 class DetectTests(unittest.TestCase):
     def test_runs_ffmpeg_encoders_listing(self):
