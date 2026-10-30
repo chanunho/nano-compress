@@ -5,7 +5,12 @@ import threading
 import time
 import unittest
 
-from nanocompress.process import Cancelled, Progress, run_with_progress
+from nanocompress.process import (
+    Cancelled,
+    Progress,
+    _with_progress_args,
+    run_with_progress,
+)
 
 FAKE = """
 import sys, time
@@ -43,6 +48,20 @@ print("progress=continue", flush=True)
 EXIT_CODE = """
 raise SystemExit(3)
 """
+
+
+class CommandBuildingTests(unittest.TestCase):
+    def test_progress_flags_follow_executable(self):
+        self.assertEqual(
+            _with_progress_args(["ffmpeg", "-i", "in"]),
+            ["ffmpeg", "-progress", "pipe:1", "-nostats", "-i", "in"],
+        )
+
+    def test_progress_flags_follow_script_for_interpreters(self):
+        self.assertEqual(
+            _with_progress_args([sys.executable, "fake.py"]),
+            [sys.executable, "fake.py", "-progress", "pipe:1", "-nostats"],
+        )
 
 
 class ProgressTests(unittest.TestCase):

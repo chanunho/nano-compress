@@ -29,6 +29,13 @@ def _is_interpreter(executable):
 
 
 def _with_progress_args(args):
+    """Insert FFmpeg's global progress flags into a command.
+
+    For normal tools the flags go immediately after the executable. Interpreters
+    (Python/PyPy) are exempt because the test harnesses run Python scripts and an
+    interpreter rejects FFmpeg's flags as its own options; for those the flags
+    follow the script/module/code argument so fake scripts still receive them.
+    """
     command = list(args)
     if not command:
         raise ValueError("args must not be empty")
