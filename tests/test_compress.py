@@ -1,4 +1,5 @@
 import os, tempfile, unittest
+from dataclasses import replace
 from nanocompress.compress import CompressRequest, compress
 from nanocompress.encoders import Encoder
 from nanocompress.probe import MediaInfo
@@ -8,6 +9,8 @@ MEDIA = MediaInfo(duration=60.0, width=1920, height=1080, video_codec="hevc",
                   sample_aspect_ratio="1:1", rotation=0, color_transfer="bt709",
                   color_primaries="bt709", is_hdr=False, is_interlaced=False,
                   audio_tracks=1, subtitles=())
+HDR_MEDIA = replace(MEDIA, is_hdr=True, color_transfer="smpte2084",
+                    color_primaries="bt2020")
 
 
 class CompressTests(unittest.TestCase):
@@ -129,4 +132,37 @@ class CompressTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("cannot read input", result.error)
         self.assertFalse(os.path.exists(self.out))
+
+    def test_keep_hdr_forces_hevc_and_10bit(self):
+        run, calls = self._runner([900 * 1024])
+        result = compress(self._request(profile="send", keep_hdr=True),
+                          prober=lambda _: HDR_MEDIA,
+                          detector=lambda: (Encoder("libx264", "h264", False),
+                                            Encoder("libx265", "hevc", False)),
+                          runner=run,
+                          verifier=lambda *a, **k: Verification(True, (), 60, "hevc", 1))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.encoder, "libx265")
+        command = " ".join(calls[-1])
+        self.assertIn("-c:v libx265", command)
+        self.assertIn("yuv420p10le", command)
+        self.assertNotIn("zscale", command)
+        self.assertTrue(any("HEVC" in warning for warning in result.warnings))
+
+    def test_keep_hdr_with_hard_cap_disables_hdr(self):
+        run, calls = self._runner([900 * 1024])
+        result = compress(self._request(profile="custom", target_mb=1,
+                                        keep_hdr=True),
+                          prober=lambda _: HDR_MEDIA,
+                          detector=lambda: (Encoder("libx264", "h264", False),
+                                            Encoder("libx265", "hevc", False)),
+                          runner=run,
+                          verifier=lambda *a, **k: Verification(True, (), 60, "h264", 1))
+        self.assertTrue(result.ok, result.error)
+        command = " ".join(calls[-1])
+        self.assertIn("zscale", command)
+        self.assertNotIn("yuv420p10le", command)
+        self.assertTrue(any("HDR was disabled to meet the size cap" in warning
+                            for warning in result.warnings))
+
 

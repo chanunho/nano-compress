@@ -9,7 +9,7 @@
 * **Smallest practical output:** Uses CRF-based encoding (not a fixed target size) to shrink each video as much as the chosen quality allows.
 * **Resolution you control:** Pick the target height from 144p to 720p. Width is computed from the source display aspect ratio.
 * **Plays by default:** Defaults to H.265/HEVC in MP4 with AAC audio, tagged `hvc1`, and writes `+faststart` so it starts instantly. H.264 is available as a maximum-compatibility fallback.
-* **HDR aware:** HDR sources are preserved as 10-bit HDR by default; `--tonemap` converts them to SDR BT.709. H.264 + HDR automatically tone-maps to SDR.
+* **HDR aware:** Legacy flags preserve HDR10/HLG as 10-bit HDR by default; the product pipeline converts to SDR BT.709 unless `--keep-hdr` is used. H.264 + HDR automatically tone-maps to SDR.
 * **Correct geometry:** Anamorphic sources get square pixels at the right display aspect ratio, and rotated phone videos are auto-rotated upright.
 * **File or folder:** Compress one video, or point it at a folder to batch an entire library.
 * **Phone-ready presets:** `--profile send|discord|email|storage` picks speed, resolution, codec, and any size cap for the way you plan to share the video. `--target-size` fits a strict MB budget.
@@ -132,7 +132,7 @@ Product-pipeline flags:
 | `--profile` | `send`, `discord`, `email`, `storage`, or `custom` |
 | `--target-size MB` | Output size cap in MB (float); implies `custom` when no profile is given |
 | `--speed` | `fast`, `balanced`, or `smallest` |
-| `--keep-hdr` | Preserve HDR10/HLG as 10-bit HDR instead of converting to SDR (use an HEVC preset such as `storage` for HEVC output) |
+| `--keep-hdr` | Preserve HDR10/HLG as 10-bit HEVC instead of converting to SDR; H.264 profiles switch to HEVC with a warning, and a hard size cap disables HDR |
 | `--keep-metadata` | Keep source metadata and chapters, including location tags |
 | `--compatibility` | Force constant 30 fps for stubborn players |
 | `--no-verify` | Skip post-encode verification |
@@ -156,7 +156,7 @@ Each output is verified with ffprobe (duration and stream count) and decoded at 
 
 #### Metadata, HDR, and timing
 
-Metadata is stripped by default, including GPS/location tags; `--keep-metadata` preserves it. HDR is converted to SDR BT.709 by default, while `--keep-hdr` preserves HDR10/HLG as 10-bit HDR (HEVC with the `storage` preset). Dolby Vision is always tone-mapped to SDR in v1. Source timestamps are preserved by default; `--compatibility` forces constant 30 fps.
+Metadata is stripped by default, including GPS/location tags; `--keep-metadata` preserves it. HDR is converted to SDR BT.709 by default, while `--keep-hdr` preserves HDR10/HLG as 10-bit HEVC. H.264 profiles switch to HEVC when `--keep-hdr` is used, and a hard size cap disables HDR so the cap wins. Dolby Vision is always tone-mapped to SDR in v1. Source timestamps are preserved by default; `--compatibility` forces constant 30 fps.
 
 Outputs are named `<name>_nc.mp4` by default, and existing outputs are skipped unless `--overwrite` is passed. The product pipeline never overwrites the source, and it returns the original file if compression would not make it smaller. `--dry-run` prints the planned commands and a `planned` summary without encoding.
 
@@ -182,7 +182,7 @@ Higher CRF means a smaller file and more visible artifacts. `--crf` overrides th
 
 ### HDR behavior
 
-The legacy flags preserve HDR/wide-gamut sources as 10-bit HDR by default, because modern iPhones, Android devices, and Macs play it natively. The product pipeline (`--profile`/`--target-size`) instead converts HDR to SDR BT.709 by default; pass `--keep-hdr` there to preserve HDR10/HLG. Some Windows configurations may not play HDR, which is why the option to convert exists:
+The legacy flags preserve HDR/wide-gamut sources as 10-bit HDR by default, because modern iPhones, Android devices, and Macs play it natively. The product pipeline (`--profile`/`--target-size`) instead converts HDR to SDR BT.709 by default; pass `--keep-hdr` there to preserve HDR10/HLG as 10-bit HEVC. H.264 profiles automatically switch to HEVC with `--keep-hdr`, and a hard size cap disables HDR because the size cap takes priority. Some Windows configurations may not play HDR, which is why the option to convert exists:
 
 ```bash
 python compressor.py movie_hdr.mp4 movie_sdr.mp4 --tonemap

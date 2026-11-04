@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import glob
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 from nanocompress.command import EncodePlan, ProductEncodeJob, build_product_commands
@@ -273,6 +273,11 @@ def _run_fallback(
     cancel,
     warnings,
 ):
+    if request.keep_hdr and media.is_hdr:
+        _add_warnings(
+            warnings,
+            ("HDR was disabled for the H.264 compatibility fallback.",),
+        )
     plan = EncodePlan(
         encoder="libx264",
         encoder_preset="veryfast",
@@ -280,7 +285,7 @@ def _run_fallback(
         crf=26,
         video_kbps=None,
         audio_bitrate=profile.audio_bitrate,
-        keep_hdr=request.keep_hdr,
+        keep_hdr=False,
         keep_metadata=request.keep_metadata,
         compatibility=request.compatibility,
         target_bytes=None,
@@ -416,11 +421,31 @@ def compress(
             already_small=True,
         )
 
+    keep_hdr = request.keep_hdr
+    if keep_hdr and media.is_hdr and profile.target_bytes is not None:
+        keep_hdr = False
+        _add_warnings(
+            warnings,
+            ("HDR was disabled to meet the size cap.",),
+        )
+    elif keep_hdr and media.is_hdr and profile.codec == "h264":
+        profile = replace(profile, codec="hevc")
+        _add_warnings(
+            warnings,
+            ("H.264 cannot preserve HDR; switching to HEVC.",),
+        )
+
+    plan_request = (
+        request
+        if keep_hdr == request.keep_hdr
+        else replace(request, keep_hdr=keep_hdr)
+    )
+
     allow_hardware = (
         profile.target_bytes is None
         and profile.name in _SHARING_PROFILES
         and profile.speed != "smallest"
-        and not request.keep_hdr
+        and not keep_hdr
     )
 
     try:
@@ -475,7 +500,7 @@ def compress(
                 crf,
                 video_kbps,
                 target_bytes,
-                request,
+                plan_request,
             )
             job = ProductEncodeJob(
                 input_path, output_path, passlog_path, media, plan
@@ -509,7 +534,7 @@ def compress(
                     None,
                     current_kbps,
                     target_bytes,
-                    request,
+                    plan_request,
                 )
                 try:
                     _commands, output_size = _encode_attempt(
@@ -547,7 +572,7 @@ def compress(
                     continue
                 except _VerificationFailed:
                     return _run_fallback(
-                        request,
+                        plan_request,
                         input_path,
                         output_path,
                         passlog_path,
@@ -578,7 +603,7 @@ def compress(
             crf,
             video_kbps,
             None,
-            request,
+            plan_request,
         )
         try:
             _commands, output_size = _encode_attempt(
@@ -597,7 +622,7 @@ def compress(
             )
         except _VerificationFailed:
             return _run_fallback(
-                request,
+                plan_request,
                 input_path,
                 output_path,
                 passlog_path,
