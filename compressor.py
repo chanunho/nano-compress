@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import sys
 
+from nanocompress.compress import CompressRequest, compress
 from nanocompress.jobs import plan_jobs
-from nanocompress.runner import format_summary, run_job
+from nanocompress.presets import PROFILES, SPEEDS, resolve_profile
+from nanocompress.runner import JobResult, format_summary, run_job
 from nanocompress.settings import (
     DENOISE_LEVELS,
     ENCODERS,
@@ -106,13 +109,141 @@ def build_parser():
         action="store_true",
         help="print planned commands without encoding",
     )
+    parser.add_argument(
+        "--profile",
+        choices=PROFILES,
+        default=None,
+        help="product output profile (enables the product pipeline)",
+    )
+    parser.add_argument(
+        "--target-size",
+        type=float,
+        default=None,
+        help="target output size in MB; implies --profile custom when absent",
+    )
+    parser.add_argument(
+        "--speed",
+        choices=SPEEDS,
+        default=None,
+        help="encoder speed/efficiency trade-off for the product pipeline",
+    )
+    parser.add_argument(
+        "--keep-hdr",
+        action="store_true",
+        help="preserve HDR instead of tone-mapping to SDR",
+    )
+    parser.add_argument(
+        "--keep-metadata",
+        action="store_true",
+        help="copy source metadata and chapters into the output",
+    )
+    parser.add_argument(
+        "--compatibility",
+        action="store_true",
+        help="favor broad device playback (e.g. cap framerate)",
+    )
+    parser.add_argument(
+        "--no-verify",
+        dest="verify",
+        action="store_false",
+        default=True,
+        help="skip output verification after encoding",
+    )
     parser.add_argument("--version", action="version", version=VERSION)
     return parser
+
+
+def _file_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _run_product(args, parser):
+    profile = args.profile or "custom"
+    try:
+        resolve_profile(profile, target_mb=args.target_size, speed=args.speed)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    try:
+        jobs = plan_jobs(
+            args.input,
+            args.output,
+            recursive=args.recursive,
+            overwrite=args.overwrite,
+        )
+    except FileNotFoundError:
+        parser.error(f"input not found: {args.input}")
+    except NotADirectoryError:
+        parser.error(f"input is not a directory: {args.input}")
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    if not jobs:
+        print("No video files found.")
+        return 0
+
+    results = []
+    for job in jobs:
+        if job.skip:
+            results.append(
+                JobResult(
+                    job.input_path,
+                    job.output_path,
+                    _file_size(job.input_path),
+                    _file_size(job.output_path),
+                    True,
+                    skipped=True,
+                )
+            )
+            continue
+
+        request = CompressRequest(
+            input_path=job.input_path,
+            output_path=job.output_path,
+            profile=profile,
+            target_mb=args.target_size,
+            speed=args.speed,
+            keep_hdr=args.keep_hdr,
+            keep_metadata=args.keep_metadata,
+            compatibility=args.compatibility,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            verify=args.verify,
+        )
+        result = compress(request)
+        for warning in result.warnings:
+            print(f"warning: {warning}", flush=True)
+        if args.dry_run:
+            for command in result.planned_commands:
+                print(f"planned: {command}", flush=True)
+
+        results.append(
+            JobResult(
+                job.input_path,
+                result.output_path,
+                result.original_size,
+                result.output_size,
+                result.ok,
+                skipped=result.skipped,
+                error=result.error,
+                dry_run=args.dry_run and result.ok,
+            )
+        )
+
+    print()
+    print(format_summary(results))
+    return 0 if all(result.ok or result.skipped for result in results) else 1
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.profile is not None or args.target_size is not None:
+        return _run_product(args, parser)
 
     options = Options(
         resolution=args.resolution,

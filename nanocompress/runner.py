@@ -18,6 +18,7 @@ class JobResult:
     ok: bool
     skipped: bool = False
     error: str = ""
+    dry_run: bool = False
 
 
 def human_size(num_bytes):
@@ -46,12 +47,15 @@ def _percent_saved(original, output):
 
 def format_summary(results):
     lines = ["Summary:"]
-    encoded = skipped = failed = 0
+    encoded = skipped = failed = planned = 0
     original_total = output_total = 0
     for result in results:
         if result.skipped:
             skipped += 1
             status = "skipped"
+        elif result.dry_run:
+            planned += 1
+            status = "planned"
         elif result.ok:
             encoded += 1
             original_total += result.original_size
@@ -68,7 +72,8 @@ def format_summary(results):
             line += f" ({result.error})"
         lines.append(line)
     lines.append(
-        f"Totals: {encoded} encoded, {skipped} skipped, {failed} failed; "
+        f"Totals: {encoded} encoded, {skipped} skipped, {planned} planned, "
+        f"{failed} failed; "
         f"{human_size(original_total)} -> {human_size(output_total)} "
         f"({_percent_saved(original_total, output_total):.1f}% saved)"
     )
