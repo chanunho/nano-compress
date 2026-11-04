@@ -1,7 +1,7 @@
 # NanoCompress Product Design — "No-upload phone-video shrinker"
 
 Date: 2026-10-29
-Status: Draft for review
+Status: Approved
 
 ## Intent and why
 

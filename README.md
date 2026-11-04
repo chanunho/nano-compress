@@ -12,6 +12,8 @@
 * **HDR aware:** HDR sources are preserved as 10-bit HDR by default; `--tonemap` converts them to SDR BT.709. H.264 + HDR automatically tone-maps to SDR.
 * **Correct geometry:** Anamorphic sources get square pixels at the right display aspect ratio, and rotated phone videos are auto-rotated upright.
 * **File or folder:** Compress one video, or point it at a folder to batch an entire library.
+* **Phone-ready presets:** `--profile send|discord|email|storage` picks speed, resolution, codec, and any size cap for the way you plan to share the video. `--target-size` fits a strict MB budget.
+* **Private by design:** Everything runs locally. There are no uploads, accounts, network calls, or telemetry.
 * **Safe runs:** Writes a `.part.mp4` temp file and renames on success, skips existing outputs, and keeps going when one file in a batch fails.
 * **No dependencies beyond FFmpeg:** Python standard library only.
 
@@ -100,6 +102,64 @@ Existing outputs are skipped unless you pass `--overwrite`. A failure on one fil
 | `--dry-run` | Print planned commands without encoding | off |
 | `--version` | Print the version | — |
 
+### Product presets
+
+The product pipeline is enabled by `--profile` or `--target-size`. Presets choose a sensible speed, resolution, and codec for a common sharing destination:
+
+| `--profile` | Speed | Target height | Codec | Size cap |
+|---|---|---|---|---|
+| `send` | fast | 720p | H.264 | none |
+| `discord` | fast | 480p | H.264 | 10 MB |
+| `email` | fast | 540p | H.264 | 25 MB |
+| `storage` | balanced | 480p | HEVC | none |
+| `custom` | fast | 720p | H.264 | required `--target-size` |
+
+```bash
+# Ready to send in a chat
+python compressor.py phone.mov --profile send
+
+# Fit a strict upload limit (MB, implies custom when no profile is given)
+python compressor.py phone.mov --profile email --target-size 20
+
+# Smaller storage copy with the balanced speed policy
+python compressor.py phone.mov --profile storage
+```
+
+Product-pipeline flags:
+
+| Flag | Description |
+|---|---|
+| `--profile` | `send`, `discord`, `email`, `storage`, or `custom` |
+| `--target-size MB` | Output size cap in MB (float); implies `custom` when no profile is given |
+| `--speed` | `fast`, `balanced`, or `smallest` |
+| `--keep-hdr` | Preserve HDR10/HLG as 10-bit HDR instead of converting to SDR (use an HEVC preset such as `storage` for HEVC output) |
+| `--keep-metadata` | Keep source metadata and chapters, including location tags |
+| `--compatibility` | Force constant 30 fps for stubborn players |
+| `--no-verify` | Skip post-encode verification |
+
+The legacy flags (`-r/--resolution`, `-q/--quality`, `-c/--crf`, `-e/--encoder`, `-p/--preset`, `--fps`, `--audio-bitrate`, `--denoise`, `--10bit`, `--tonemap`, `--recursive`, `--overwrite`, `--dry-run`, `--version`) remain available when no product flag is used.
+
+#### Hard size cap
+
+When a preset or `--target-size` sets a cap, NanoCompress aims for about 95% of it, measures the actual output, and retries with a reduced bitrate for up to three attempts. If two attempts still miss, it drops the resolution. It never returns a file over the cap; if the target cannot be met it fails with a clear message.
+
+#### Speed policy
+
+* `fast` uses hardware encoders when available and safe (sharing presets without a hard cap and without `--keep-hdr`); otherwise it uses x264 `veryfast` or HEVC `fast`.
+* `balanced` uses the `medium` preset.
+* `smallest` always uses the slower software encoder presets.
+* Hardware is never used for a hard size cap, and `smallest` is never hardware.
+
+#### Verification and fallback
+
+Each output is verified with ffprobe (duration and stream count) and decoded at the start, middle, and end. If verification fails, NanoCompress automatically retries with H.264. Use `--no-verify` to skip these checks.
+
+#### Metadata, HDR, and timing
+
+Metadata is stripped by default, including GPS/location tags; `--keep-metadata` preserves it. HDR is converted to SDR BT.709 by default, while `--keep-hdr` preserves HDR10/HLG as 10-bit HDR (HEVC with the `storage` preset). Dolby Vision is always tone-mapped to SDR in v1. Source timestamps are preserved by default; `--compatibility` forces constant 30 fps.
+
+Outputs are named `<name>_nc.mp4` by default, and existing outputs are skipped unless `--overwrite` is passed. The product pipeline never overwrites the source, and it returns the original file if compression would not make it smaller. `--dry-run` prints the planned commands and a `planned` summary without encoding.
+
 ### Quality levels
 
 | Level | HEVC CRF | H.264 CRF | Intent |
@@ -122,7 +182,7 @@ Higher CRF means a smaller file and more visible artifacts. `--crf` overrides th
 
 ### HDR behavior
 
-HDR/wide-gamut sources are preserved as 10-bit HDR by default, because modern iPhones, Android devices, and Macs play it natively. Some Windows configurations may not, which is why the option to convert exists:
+The legacy flags preserve HDR/wide-gamut sources as 10-bit HDR by default, because modern iPhones, Android devices, and Macs play it natively. The product pipeline (`--profile`/`--target-size`) instead converts HDR to SDR BT.709 by default; pass `--keep-hdr` there to preserve HDR10/HLG. Some Windows configurations may not play HDR, which is why the option to convert exists:
 
 ```bash
 python compressor.py movie_hdr.mp4 movie_sdr.mp4 --tonemap
@@ -140,8 +200,14 @@ nanocompress/
 ├── compressor.py            # CLI entry point
 ├── nanocompress/
 │   ├── settings.py          # options, quality→CRF mapping, validation
+│   ├── presets.py           # product presets and speed/codec resolution
+│   ├── encoders.py          # encoder detection/selection and presets
+│   ├── target_size.py       # size budget planning and retry math
 │   ├── probe.py             # ffprobe metadata parsing
 │   ├── command.py           # FFmpeg command construction
+│   ├── process.py           # subprocess execution, progress, cancellation
+│   ├── verify.py            # output duration/stream/decode verification
+│   ├── compress.py          # product orchestration, retries, fallback
 │   ├── jobs.py              # file/folder planning, naming, temp outputs
 │   └── runner.py            # execution, size reporting, summaries
 ├── tests/                   # unittest suites (stdlib only)
