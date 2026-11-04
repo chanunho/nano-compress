@@ -104,3 +104,29 @@ class CompressTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("cancel", result.error.lower())
         self.assertFalse(os.path.exists(self.out))
+
+    def test_runner_nonzero_stops_and_reports_failure(self):
+        calls = []
+        def run(args, duration, **kw):
+            calls.append(args)
+            return 1
+        result = compress(self._request(profile="custom", target_mb=1),
+                          prober=lambda _: MEDIA,
+                          detector=lambda: (Encoder("libx264", "h264", False),),
+                          runner=run)
+        self.assertFalse(result.ok)
+        self.assertIn("exit status 1", result.error)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_prober_failure_returns_error(self):
+        def boom(_):
+            raise RuntimeError("cannot read input")
+        result = compress(self._request(),
+                          prober=boom,
+                          detector=lambda: (Encoder("libx264", "h264", False),),
+                          runner=lambda *a, **k: 0)
+        self.assertFalse(result.ok)
+        self.assertIn("cannot read input", result.error)
+        self.assertFalse(os.path.exists(self.out))
+

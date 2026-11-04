@@ -71,6 +71,14 @@ class _VerificationFailed(Exception):
         self.result = result
 
 
+class _CommandFailed(Exception):
+    def __init__(self, returncode, executable):
+        super().__init__(
+            f"{executable} failed with exit status {returncode}"
+        )
+        self.returncode = returncode
+
+
 def _is_hardware_encoder(name):
     return any(f"_{suffix}" in name for suffix in _HARDWARE_ENCODER_SUFFIXES)
 
@@ -206,7 +214,10 @@ def _run_commands(commands, duration_s, runner, progress, cancel):
         options = {"progress": callback}
         if cancel is not None:
             options["cancel"] = cancel
-        runner(command.args, duration_s, **options)
+        returncode = runner(command.args, duration_s, **options)
+        if returncode not in (0, None):
+            executable = command.args[0] if command.args else "command"
+            raise _CommandFailed(returncode, executable)
 
 
 def _encode_attempt(
@@ -370,7 +381,16 @@ def compress(
     except ValueError as exc:
         return _failure(output_path, original_size, "", warnings, str(exc))
 
-    media = prober(input_path)
+    try:
+        media = prober(input_path)
+    except Exception as exc:
+        return _failure(
+            output_path,
+            original_size,
+            "",
+            warnings,
+            f"could not probe input: {exc}",
+        )
 
     if profile.target_bytes is not None and media.duration <= 0:
         return _failure(
@@ -411,8 +431,14 @@ def compress(
             available,
             allow_hardware=allow_hardware,
         )
-    except (RuntimeError, ValueError) as exc:
-        return _failure(output_path, original_size, "", warnings, str(exc))
+    except Exception as exc:
+        return _failure(
+            output_path,
+            original_size,
+            "",
+            warnings,
+            f"could not select encoder: {exc}",
+        )
 
     target_bytes = profile.target_bytes
     if target_bytes is not None and _is_hardware_encoder(encoder):
@@ -593,6 +619,10 @@ def compress(
             output_size,
             encoder,
             warnings,
+        )
+    except _CommandFailed as exc:
+        return _failure(
+            output_path, original_size, encoder, warnings, str(exc)
         )
     except Cancelled:
         return _failure(
