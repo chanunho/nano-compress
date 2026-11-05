@@ -150,6 +150,7 @@ class CompressTests(unittest.TestCase):
                               Encoder("libx264", "h264", False)),
             runner=run,
             verifier=lambda *a, **k: Verification(True, (), 60, "h264", 1),
+            encoder_chooser=lambda *a, **k: "h264_nvenc",
         )
         self.assertTrue(result.ok, result.error)
         self.assertIn("libx264", calls[-1])
