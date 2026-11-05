@@ -7,6 +7,7 @@ import unittest
 
 from nanocompress.process import (
     Cancelled,
+    CommandError,
     Progress,
     _with_progress_args,
     run_with_progress,
@@ -47,6 +48,14 @@ print("progress=continue", flush=True)
 
 EXIT_CODE = """
 raise SystemExit(3)
+"""
+
+FAIL_WITH_DETAIL = """
+import sys
+print("Error: encoder is unavailable", flush=True)
+print("out_time_ms=1000000", flush=True)
+print("progress=continue", flush=True)
+raise SystemExit(1)
 """
 
 
@@ -113,8 +122,17 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(seen, [0.0, 0.0, 0.0])
 
-    def test_returns_child_exit_code(self):
-        self.assertEqual(run_with_progress(self._script(EXIT_CODE), 1.0), 3)
+    def test_raises_on_child_exit_code(self):
+        with self.assertRaises(CommandError) as caught:
+            run_with_progress(self._script(EXIT_CODE), 1.0)
+        self.assertEqual(caught.exception.returncode, 3)
+
+    def test_failure_includes_diagnostic_tail(self):
+        with self.assertRaises(CommandError) as caught:
+            run_with_progress(self._script(FAIL_WITH_DETAIL), 1.0)
+        self.assertEqual(caught.exception.returncode, 1)
+        self.assertIn("encoder is unavailable", str(caught.exception))
+        self.assertIn("encoder is unavailable", caught.exception.detail)
 
     def test_progress_is_frozen_dataclass(self):
         with self.assertRaises(Exception):

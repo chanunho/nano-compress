@@ -233,6 +233,17 @@ class ProductCommandTests(unittest.TestCase):
         self.assertIn("null", commands[0].args)
         self.assertEqual(commands[1].args[commands[1].args.index("-pass") + 1], "2")
 
+    def test_target_size_emits_software_preset(self):
+        commands = build_product_commands(product_job(
+            crf=None, video_kbps=1237, target_bytes=10 * 1024 * 1024,
+            encoder_preset="slow",
+        ))
+        for command in commands:
+            self.assertIn("-preset", command.args)
+            self.assertEqual(
+                command.args[command.args.index("-preset") + 1], "slow"
+            )
+
     def test_maps_all_audio_and_text_subtitles(self):
         m = media(subtitles=(Subtitle(2, "subrip"), Subtitle(5, "hdmv_pgs_subtitle")))
         result = build_product_commands(product_job(m))[0]

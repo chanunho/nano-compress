@@ -2,6 +2,7 @@ import os
 import queue
 import subprocess
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -10,6 +11,22 @@ _TERMINATE_TIMEOUT = 5.0
 _PROGRESS_ARGS = ("-progress", "pipe:1", "-nostats")
 _INTERPRETER_PREFIXES = ("python", "pypy")
 _INTERPRETER_VALUE_OPTIONS = frozenset({"-W", "-X", "-Q"})
+_DETAIL_LINES = 20
+_PROGRESS_KEYS = frozenset(
+    {
+        "bitrate",
+        "drop_frames",
+        "dup_frames",
+        "fps",
+        "frame",
+        "out_time",
+        "out_time_ms",
+        "out_time_us",
+        "progress",
+        "speed",
+        "total_size",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +38,16 @@ class Progress:
 
 class Cancelled(Exception):
     pass
+
+
+class CommandError(Exception):
+    def __init__(self, returncode, detail=""):
+        message = f"command failed with exit status {returncode}"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
+        self.returncode = returncode
+        self.detail = detail
 
 
 def _is_interpreter(executable):
@@ -99,6 +126,7 @@ def run_with_progress(
     seconds = 0.0
     speed = ""
     pending = False
+    detail_lines = deque(maxlen=_DETAIL_LINES)
 
     def report():
         if progress is None:
@@ -120,8 +148,11 @@ def run_with_progress(
             if line is None:
                 break
 
-            key, separator, value = line.strip().partition("=")
+            stripped = line.strip()
+            key, separator, value = stripped.partition("=")
             if not separator:
+                if stripped:
+                    detail_lines.append(stripped)
                 continue
             if key in ("out_time_ms", "out_time_us"):
                 try:
@@ -135,10 +166,15 @@ def run_with_progress(
                 if pending:
                     report()
                     pending = False
+            elif key not in _PROGRESS_KEYS and stripped:
+                detail_lines.append(stripped)
 
         if pending:
             report()
-        return process.wait()
+        returncode = process.wait()
+        if returncode not in (0, None):
+            raise CommandError(returncode, "\n".join(detail_lines))
+        return returncode
     finally:
         if process.poll() is None:
             _stop(process)

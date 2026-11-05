@@ -263,10 +263,14 @@ def _product_video_args(media, plan, tonemap):
     args = ["-c:v", plan.encoder]
     if plan.target_bytes is not None and plan.video_kbps is not None:
         args += _product_bitrate_args(plan)
+        if not _is_hardware_encoder(plan.encoder):
+            args += ["-preset", plan.encoder_preset]
     elif plan.crf is not None:
         args += ["-crf", str(plan.crf), "-preset", plan.encoder_preset]
     elif plan.video_kbps is not None:
         args += _product_bitrate_args(plan)
+        if not _is_hardware_encoder(plan.encoder):
+            args += ["-preset", plan.encoder_preset]
     else:
         raise ValueError("plan requires crf or video_kbps")
 

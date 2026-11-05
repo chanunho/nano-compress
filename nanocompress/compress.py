@@ -10,7 +10,12 @@ from nanocompress.encoders import choose_encoder, detect_encoders, encoder_prese
 from nanocompress.jobs import TempOutput
 from nanocompress.presets import resolve_profile
 from nanocompress.probe import probe
-from nanocompress.process import Cancelled, Progress, run_with_progress
+from nanocompress.process import (
+    Cancelled,
+    CommandError,
+    Progress,
+    run_with_progress,
+)
 from nanocompress.target_size import next_bitrate, plan_size, within_cap
 from nanocompress.verify import verify_output
 
@@ -66,17 +71,20 @@ class _SizeExceeded(Exception):
 
 
 class _VerificationFailed(Exception):
-    def __init__(self, result):
+    def __init__(self, result, resolution=None):
         super().__init__("verification failed")
         self.result = result
+        self.resolution = resolution
 
 
 class _CommandFailed(Exception):
-    def __init__(self, returncode, executable):
-        super().__init__(
-            f"{executable} failed with exit status {returncode}"
-        )
+    def __init__(self, returncode, executable, detail=""):
+        message = f"{executable} failed with exit status {returncode}"
+        if detail:
+            message += f": {detail}"
+        super().__init__(message)
         self.returncode = returncode
+        self.detail = detail
 
 
 def _is_hardware_encoder(name):
@@ -89,6 +97,57 @@ def _encoder_codec(encoder, fallback):
     if "265" in encoder or encoder.startswith("hevc"):
         return "hevc"
     return fallback
+
+
+def _non_target_params(encoder, profile):
+    if _is_hardware_encoder(encoder):
+        return (
+            _HARDWARE_RESOLUTION_KBPS.get(
+                profile.resolution, _DEFAULT_HARDWARE_KBPS
+            ),
+            None,
+        )
+    return None, _SOFTWARE_CRF.get(profile.name, _DEFAULT_CRF)
+
+
+def _size_failure(
+    output_path, original_size, encoder, warnings, target_bytes, audio_tracks
+):
+    cap_mb = target_bytes / (1024 * 1024)
+    return _failure(
+        output_path,
+        original_size,
+        encoder,
+        warnings,
+        f"could not fit under {cap_mb:.2f} MB with {audio_tracks} "
+        "audio track(s); try a larger cap",
+    )
+
+
+def _verification_failure(
+    output_path, original_size, encoder, warnings, result
+):
+    reasons = "; ".join(result.reasons) or "verification failed"
+    return _failure(
+        output_path,
+        original_size,
+        encoder,
+        warnings,
+        f"verification failed: {reasons}",
+    )
+
+
+def _reduce_audio(audio_kbps, audio_tracks, warnings):
+    if audio_tracks <= 0 or audio_kbps <= 48:
+        return audio_kbps
+    _add_warnings(
+        warnings,
+        (
+            f"Reduced audio bitrate from {audio_kbps}k to 48k "
+            "to meet the size cap.",
+        ),
+    )
+    return 48
 
 
 def _drop_resolution(height):
@@ -141,9 +200,19 @@ def _failure(output_path, original_size, encoder, warnings, error):
     )
 
 
-def _finish(input_path, output_path, original_size, output_size, encoder, warnings):
+def _finish(
+    input_path,
+    output_path,
+    original_size,
+    output_size,
+    encoder,
+    warnings,
+    *,
+    target_bytes=None,
+):
     if (
-        original_size > 0
+        target_bytes is None
+        and original_size > 0
         and output_size >= original_size * _ALREADY_SMALL_RATIO
     ):
         try:
@@ -179,6 +248,8 @@ def _make_plan(
     video_kbps,
     target_bytes,
     request,
+    *,
+    audio_bitrate=None,
 ):
     codec = _encoder_codec(encoder, profile.codec)
     return EncodePlan(
@@ -187,7 +258,9 @@ def _make_plan(
         resolution=resolution,
         crf=crf,
         video_kbps=video_kbps,
-        audio_bitrate=profile.audio_bitrate,
+        audio_bitrate=(
+            profile.audio_bitrate if audio_bitrate is None else audio_bitrate
+        ),
         keep_hdr=request.keep_hdr,
         keep_metadata=request.keep_metadata,
         compatibility=request.compatibility,
@@ -214,9 +287,14 @@ def _run_commands(commands, duration_s, runner, progress, cancel):
         options = {"progress": callback}
         if cancel is not None:
             options["cancel"] = cancel
-        returncode = runner(command.args, duration_s, **options)
+        executable = command.args[0] if command.args else "command"
+        try:
+            returncode = runner(command.args, duration_s, **options)
+        except CommandError as exc:
+            raise _CommandFailed(
+                exc.returncode, executable, exc.detail
+            ) from exc
         if returncode not in (0, None):
-            executable = command.args[0] if command.args else "command"
             raise _CommandFailed(returncode, executable)
 
 
@@ -256,6 +334,99 @@ def _encode_attempt(
     return commands, output_size
 
 
+def _run_size_attempts(
+    input_path,
+    output_path,
+    passlog_path,
+    media,
+    profile,
+    plan_request,
+    encoder,
+    target_bytes,
+    size_plan,
+    original_size,
+    *,
+    runner,
+    verifier,
+    progress,
+    cancel,
+    warnings,
+    do_verify,
+):
+    attempts = 0
+    current_resolution = profile.resolution
+    current_kbps = size_plan.video_kbps
+    current_audio_kbps = size_plan.audio_kbps
+    while attempts < _MAX_ATTEMPTS:
+        attempts += 1
+        plan = _make_plan(
+            encoder,
+            profile,
+            current_resolution,
+            None,
+            current_kbps,
+            target_bytes,
+            plan_request,
+            audio_bitrate=f"{current_audio_kbps}k",
+        )
+        try:
+            _commands, output_size = _encode_attempt(
+                input_path,
+                output_path,
+                passlog_path,
+                media,
+                plan,
+                runner=runner,
+                progress=progress,
+                cancel=cancel,
+                verifier=verifier,
+                warnings=warnings,
+                target_bytes=target_bytes,
+                do_verify=do_verify,
+            )
+        except _SizeExceeded as exc:
+            if attempts >= _MAX_ATTEMPTS:
+                return _size_failure(
+                    output_path,
+                    original_size,
+                    encoder,
+                    warnings,
+                    target_bytes,
+                    media.audio_tracks,
+                )
+            _cleanup_passlog(passlog_path)
+            if attempts == _MAX_ATTEMPTS - 1:
+                new_resolution = _drop_resolution(current_resolution)
+                if new_resolution < current_resolution:
+                    _add_warnings(
+                        warnings,
+                        (
+                            f"Reduced resolution from {current_resolution}p to "
+                            f"{new_resolution}p to meet the size cap.",
+                        ),
+                    )
+                current_resolution = new_resolution
+                current_audio_kbps = _reduce_audio(
+                    current_audio_kbps, media.audio_tracks, warnings
+                )
+            current_kbps = next_bitrate(
+                exc.actual_bytes, target_bytes, current_kbps
+            )
+            continue
+        except _VerificationFailed as exc:
+            exc.resolution = current_resolution
+            raise
+        return _finish(
+            input_path,
+            output_path,
+            original_size,
+            output_size,
+            encoder,
+            warnings,
+            target_bytes=target_bytes,
+        )
+
+
 def _run_fallback(
     request,
     input_path,
@@ -273,11 +444,51 @@ def _run_fallback(
     cancel,
     warnings,
 ):
+    _add_warnings(
+        warnings,
+        (
+            "Output failed verification; retrying with H.264 for "
+            "compatibility.",
+        ),
+    )
     if request.keep_hdr and media.is_hdr:
         _add_warnings(
             warnings,
             ("HDR was disabled for the H.264 compatibility fallback.",),
         )
+    if target_bytes is not None:
+        try:
+            size_plan = plan_size(
+                media.duration, target_bytes, media.audio_tracks
+            )
+        except ValueError as exc:
+            return _failure(
+                output_path, original_size, "libx264", warnings, str(exc)
+            )
+        try:
+            return _run_size_attempts(
+                input_path,
+                output_path,
+                passlog_path,
+                media,
+                profile,
+                request,
+                "libx264",
+                target_bytes,
+                size_plan,
+                original_size,
+                runner=runner,
+                verifier=verifier,
+                progress=progress,
+                cancel=cancel,
+                warnings=warnings,
+                do_verify=True,
+            )
+        except _VerificationFailed as exc:
+            return _verification_failure(
+                output_path, original_size, "libx264", warnings, exc.result
+            )
+
     plan = EncodePlan(
         encoder="libx264",
         encoder_preset="veryfast",
@@ -302,26 +513,12 @@ def _run_fallback(
             cancel=cancel,
             verifier=verifier,
             warnings=warnings,
-            target_bytes=target_bytes,
+            target_bytes=None,
             do_verify=True,
         )
-    except _SizeExceeded:
-        cap_mb = target_bytes / (1024 * 1024)
-        return _failure(
-            output_path,
-            original_size,
-            "libx264",
-            warnings,
-            f"could not fit under {cap_mb:.2f} MB",
-        )
     except _VerificationFailed as exc:
-        reasons = "; ".join(exc.result.reasons) or "verification failed"
-        return _failure(
-            output_path,
-            original_size,
-            "libx264",
-            warnings,
-            f"verification failed: {reasons}",
+        return _verification_failure(
+            output_path, original_size, "libx264", warnings, exc.result
         )
     return _finish(
         input_path, output_path, original_size, output_size, "libx264", warnings
@@ -469,6 +666,7 @@ def compress(
     if target_bytes is not None and _is_hardware_encoder(encoder):
         encoder = _SOFTWARE_FALLBACK[profile.codec]
 
+    size_plan = None
     if target_bytes is not None:
         try:
             size_plan = plan_size(
@@ -480,14 +678,8 @@ def compress(
             )
         video_kbps = size_plan.video_kbps
         crf = None
-    elif _is_hardware_encoder(encoder):
-        video_kbps = _HARDWARE_RESOLUTION_KBPS.get(
-            profile.resolution, _DEFAULT_HARDWARE_KBPS
-        )
-        crf = None
     else:
-        video_kbps = None
-        crf = _SOFTWARE_CRF.get(profile.name, _DEFAULT_CRF)
+        video_kbps, crf = _non_target_params(encoder, profile)
 
     passlog_path = _passlog_path(output_path)
 
@@ -522,78 +714,41 @@ def compress(
             )
 
         if target_bytes is not None:
-            attempts = 0
-            current_resolution = profile.resolution
-            current_kbps = video_kbps
-            while attempts < _MAX_ATTEMPTS:
-                attempts += 1
-                plan = _make_plan(
-                    encoder,
-                    profile,
-                    current_resolution,
-                    None,
-                    current_kbps,
-                    target_bytes,
-                    plan_request,
-                )
-                try:
-                    _commands, output_size = _encode_attempt(
-                        input_path,
-                        output_path,
-                        passlog_path,
-                        media,
-                        plan,
-                        runner=runner,
-                        progress=progress,
-                        cancel=cancel,
-                        verifier=verifier,
-                        warnings=warnings,
-                        target_bytes=target_bytes,
-                        do_verify=request.verify,
-                    )
-                except _SizeExceeded as exc:
-                    if attempts >= _MAX_ATTEMPTS:
-                        cap_mb = target_bytes / (1024 * 1024)
-                        return _failure(
-                            output_path,
-                            original_size,
-                            encoder,
-                            warnings,
-                            f"could not fit under {cap_mb:.2f} MB",
-                        )
-                    _cleanup_passlog(passlog_path)
-                    if attempts == _MAX_ATTEMPTS - 1:
-                        current_resolution = _drop_resolution(
-                            current_resolution
-                        )
-                    current_kbps = next_bitrate(
-                        exc.actual_bytes, target_bytes, current_kbps
-                    )
-                    continue
-                except _VerificationFailed:
-                    return _run_fallback(
-                        plan_request,
-                        input_path,
-                        output_path,
-                        passlog_path,
-                        media,
-                        profile,
-                        current_resolution,
-                        target_bytes,
-                        original_size,
-                        runner=runner,
-                        verifier=verifier,
-                        progress=progress,
-                        cancel=cancel,
-                        warnings=warnings,
-                    )
-                return _finish(
+            try:
+                return _run_size_attempts(
                     input_path,
                     output_path,
-                    original_size,
-                    output_size,
+                    passlog_path,
+                    media,
+                    profile,
+                    plan_request,
                     encoder,
-                    warnings,
+                    target_bytes,
+                    size_plan,
+                    original_size,
+                    runner=runner,
+                    verifier=verifier,
+                    progress=progress,
+                    cancel=cancel,
+                    warnings=warnings,
+                    do_verify=request.verify,
+                )
+            except _VerificationFailed as exc:
+                return _run_fallback(
+                    plan_request,
+                    input_path,
+                    output_path,
+                    passlog_path,
+                    media,
+                    profile,
+                    exc.resolution or profile.resolution,
+                    target_bytes,
+                    original_size,
+                    runner=runner,
+                    verifier=verifier,
+                    progress=progress,
+                    cancel=cancel,
+                    warnings=warnings,
                 )
 
         plan = _make_plan(
@@ -606,20 +761,58 @@ def compress(
             plan_request,
         )
         try:
-            _commands, output_size = _encode_attempt(
-                input_path,
-                output_path,
-                passlog_path,
-                media,
-                plan,
-                runner=runner,
-                progress=progress,
-                cancel=cancel,
-                verifier=verifier,
-                warnings=warnings,
-                target_bytes=None,
-                do_verify=request.verify,
-            )
+            try:
+                _commands, output_size = _encode_attempt(
+                    input_path,
+                    output_path,
+                    passlog_path,
+                    media,
+                    plan,
+                    runner=runner,
+                    progress=progress,
+                    cancel=cancel,
+                    verifier=verifier,
+                    warnings=warnings,
+                    target_bytes=None,
+                    do_verify=request.verify,
+                )
+            except _CommandFailed:
+                if not _is_hardware_encoder(encoder):
+                    raise
+                failed_encoder = encoder
+                encoder = _SOFTWARE_FALLBACK[profile.codec]
+                _add_warnings(
+                    warnings,
+                    (
+                        f"Hardware encoder {failed_encoder} failed; "
+                        f"retrying with {encoder}.",
+                    ),
+                )
+                _cleanup_passlog(passlog_path)
+                video_kbps, crf = _non_target_params(encoder, profile)
+                plan = _make_plan(
+                    encoder,
+                    profile,
+                    profile.resolution,
+                    crf,
+                    video_kbps,
+                    None,
+                    plan_request,
+                )
+                _commands, output_size = _encode_attempt(
+                    input_path,
+                    output_path,
+                    passlog_path,
+                    media,
+                    plan,
+                    runner=runner,
+                    progress=progress,
+                    cancel=cancel,
+                    verifier=verifier,
+                    warnings=warnings,
+                    target_bytes=None,
+                    do_verify=request.verify,
+                )
         except _VerificationFailed:
             return _run_fallback(
                 plan_request,
