@@ -2,14 +2,18 @@
 
 > An open-source video compression pipeline that produces the smallest practical MP4 at a resolution you choose, while staying playable by default on modern phones and computers.
 
+[![Tests](https://github.com/chanunho/nano-compress/actions/workflows/tests.yml/badge.svg)](https://github.com/chanunho/nano-compress/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+
 ---
 
 ## 🚀 Features
 
-* **Smallest practical output:** Uses CRF-based encoding (not a fixed target size) to shrink each video as much as the chosen quality allows.
+* **Smallest practical output:** Quality-driven CRF presets shrink each video as much as the chosen quality allows, and product presets can enforce a hard `--target-size` cap when you need to fit a limit.
 * **Resolution you control:** Pick the target height from 144p to 720p. Width is computed from the source display aspect ratio.
-* **Plays by default:** Defaults to H.265/HEVC in MP4 with AAC audio, tagged `hvc1`, and writes `+faststart` so it starts instantly. H.264 is available as a maximum-compatibility fallback.
-* **HDR aware:** Legacy flags preserve HDR10/HLG as 10-bit HDR by default; the product pipeline converts to SDR BT.709 unless `--keep-hdr` is used. H.264 + HDR automatically tone-maps to SDR.
+* **Plays by default:** Outputs H.264 for sharing presets and H.265/HEVC for storage (and the legacy default) in MP4 with AAC audio, tagged `hvc1` for HEVC, and writes `+faststart` so it starts instantly.
+* **HDR aware:** Legacy flags preserve HDR10/HLG as 10-bit HDR by default; the product pipeline converts to SDR BT.709 unless `--keep-hdr` is used. H.264 + HDR automatically tone-maps to SDR, while `--keep-hdr` switches H.264 profiles to HEVC instead.
 * **Correct geometry:** Anamorphic sources get square pixels at the right display aspect ratio, and rotated phone videos are auto-rotated upright.
 * **File or folder:** Compress one video, or point it at a folder to batch an entire library.
 * **Phone-ready presets:** `--profile send|discord|email|storage` picks speed, resolution, codec, and any size cap for the way you plan to share the video. `--target-size` fits a strict MB budget.
@@ -29,13 +33,15 @@
 
 `--tonemap` also needs an FFmpeg build with `zscale`/`zimg` (the common Linux, macOS, and Windows builds include it).
 
+NanoCompress itself is MIT-licensed and does **not** bundle FFmpeg. FFmpeg is a separate dependency, and the license of your FFmpeg build (and the codecs inside it) is your responsibility.
+
 ---
 
 ## 📥 Installation
 
 ```bash
-git clone https://github.com/your-username/nanocompress.git
-cd nanocompress
+git clone https://github.com/chanunho/nano-compress.git
+cd nano-compress
 ```
 
 No pip install is required.
@@ -49,6 +55,8 @@ python compressor.py INPUT [OUTPUT] [options]
 ```
 
 `INPUT` can be a video file or a folder.
+
+Two paths are available: the **legacy CLI** (used when no product flag is given) and the **product pipeline** (enabled by `--profile` or `--target-size`). The examples below cover both.
 
 ### Single file
 

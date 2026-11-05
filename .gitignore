@@ -1,10 +1,29 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
 .worktrees/
 .superpowers/
 opencode.json
 
+# Local environment
+.env
+.env.local
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+project.vim.lua
+*.swp
+*~
+
+# Media samples
 *.mp4
 *.mkv
 *.mov

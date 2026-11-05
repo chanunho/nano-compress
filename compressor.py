@@ -17,7 +17,7 @@ from nanocompress.settings import (
     validate_options,
 )
 
-VERSION = "NanoCompress 2.0"
+VERSION = "NanoCompress 3.0"
 
 
 def build_parser():
