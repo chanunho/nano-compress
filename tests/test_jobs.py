@@ -72,8 +72,15 @@ class PlanFolderModeTests(unittest.TestCase):
 
     def test_recursive_mirrors_tree(self):
         jobs = plan_jobs(self.root, None, recursive=True, overwrite=False)
-        outputs = sorted(os.path.relpath(j.output_path, os.path.join(self.root, "compressed")) for j in jobs)
-        self.assertEqual(outputs, ["a_nc.mp4", "b_nc.mp4", "sub/c_nc.mp4"])
+        output_root = os.path.join(self.root, "compressed")
+        outputs = sorted(
+            os.path.normpath(os.path.relpath(j.output_path, output_root))
+            for j in jobs
+        )
+        expected = sorted(
+            ["a_nc.mp4", "b_nc.mp4", os.path.join("sub", "c_nc.mp4")]
+        )
+        self.assertEqual(outputs, expected)
 
     def test_output_dir_pruned_from_discovery(self):
         out = os.path.join(self.root, "compressed")
@@ -118,7 +125,10 @@ class PlanFolderModeTests(unittest.TestCase):
         external = os.path.join(outside, "outside.mp4")
         open(external, "wb").close()
         link = os.path.join(self.root, "link.mp4")
-        os.symlink(external, link)
+        try:
+            os.symlink(external, link)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks are unavailable here: {exc}")
 
         jobs = plan_jobs(self.root, None, recursive=False, overwrite=False)
         planned = next(j for j in jobs if os.path.basename(j.input_path) == "link.mp4")

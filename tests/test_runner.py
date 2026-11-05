@@ -11,6 +11,18 @@ from nanocompress.runner import JobResult, human_size, format_summary, run_job
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
+def supports_display_rotation():
+    if not HAVE_FFMPEG:
+        return False
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-h", "long"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return "display_rotation" in (result.stdout + result.stderr)
+
+
 class HumanSizeTests(unittest.TestCase):
     def test_units(self):
         self.assertEqual(human_size(0), "0 B")
@@ -74,6 +86,8 @@ class RunJobIntegrationTests(unittest.TestCase):
         self.assertLess(data.find(b"moov"), data.find(b"mdat"))
 
     def test_rotated_source_is_not_sideways(self):
+        if not supports_display_rotation():
+            self.skipTest("ffmpeg does not support -display_rotation")
         rotated = os.path.join(self.dir, "rotated.mp4")
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -101,6 +115,8 @@ class RunJobIntegrationTests(unittest.TestCase):
         self.assertIn(bad, result.error)
 
     def test_rotated_anamorphic_source_has_correct_aspect(self):
+        if not supports_display_rotation():
+            self.skipTest("ffmpeg does not support -display_rotation")
         anamorphic = os.path.join(self.dir, "anamorphic.mp4")
         subprocess.run([
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
