@@ -18,10 +18,10 @@ def run_cli(*args, cwd=None):
 def make_clip(path, seconds=1):
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=24",
+        "-f", "lavfi", "-i", "testsrc=size=160x120:rate=24,noise=alls=30:allf=t",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
         "-t", str(seconds), "-c:v", "libx264", "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", path,
+        "-qp", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", path,
     ], check=True)
 
 
@@ -76,6 +76,35 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(os.path.exists(os.path.join(self.dir, "compressed", "good_nc.mp4")))
         self.assertIn("fail", result.stdout.lower())
+
+
+@unittest.skipUnless(HAVE_FFMPEG, "ffmpeg not available")
+class ProductCliTests(unittest.TestCase):
+    def test_dry_run_custom_cap_prints_two_passes_and_no_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "a.mp4")
+            make_clip(src, seconds=3)
+            out = os.path.join(tmp, "a_small.mp4")
+            result = run_cli(src, out, "--profile", "custom", "--target-size", "0.3",
+                             "--dry-run")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("-pass", result.stdout)
+            self.assertIn("planned", result.stdout.lower())
+            self.assertFalse(os.path.exists(out))
+
+    def test_storage_profiles_uses_hevc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "a.mp4")
+            make_clip(src)
+            result = run_cli(src, "--profile", "storage", "--dry-run")
+            self.assertIn("libx265", result.stdout)
+
+    def test_smallest_speed_uses_slow_preset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "a.mp4")
+            make_clip(src)
+            result = run_cli(src, "--profile", "send", "--speed", "smallest", "--dry-run")
+            self.assertIn("slow", result.stdout)
 
 
 if __name__ == "__main__":
