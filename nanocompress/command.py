@@ -275,6 +275,9 @@ def _product_video_args(media, plan, tonemap):
         raise ValueError("plan requires crf or video_kbps")
 
     args += ["-pix_fmt", _product_pix_fmt(media, plan, tonemap)]
+    if plan.target_bytes is not None:
+        # Keep pass 2 from seeing extra frames when audio outlasts video.
+        args += ["-shortest"]
 
     if media.is_hdr and not tonemap:
         args += [

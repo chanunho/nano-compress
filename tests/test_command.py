@@ -214,6 +214,7 @@ class ProductCommandTests(unittest.TestCase):
     def test_default_preserves_vfr_timestamps(self):
         cmd = build_product_commands(product_job())[0].args
         self.assertNotIn("fps=", " ".join(cmd))
+        self.assertNotIn("-shortest", cmd)
 
     def test_hardware_bitrate_mode(self):
         cmd = build_product_commands(product_job(encoder="h264_nvenc", crf=None,
@@ -232,6 +233,8 @@ class ProductCommandTests(unittest.TestCase):
         self.assertIn("-f", commands[0].args)
         self.assertIn("null", commands[0].args)
         self.assertEqual(commands[1].args[commands[1].args.index("-pass") + 1], "2")
+        for command in commands:
+            self.assertIn("-shortest", command.args)
 
     def test_target_size_emits_software_preset(self):
         commands = build_product_commands(product_job(
